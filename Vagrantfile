@@ -9,7 +9,10 @@ Vagrant.configure("2") do |config|
     # Make sure you don't check in aws.sh (maybe make a copy with your "secret" data)
     # Before that, do
     #   vagrant plugin install vagrant-aws; vagrant plugin install vagrant-sshfs
-    config.vm.box = "ubuntu/trusty64"
+
+#    config.vm.box = "bento/ubuntu-16.04"
+
+    config.vm.box = "https://cloud-images.ubuntu.com/releases/xenial/release/ubuntu-16.04-server-cloudimg-amd64-vagrant.box"
     config.vm.synced_folder ".", "/vagrant", :mount_options => ["dmode=777", "fmode=777"]
 
     config.vm.provider "virtualbox" do |vbox|
@@ -17,6 +20,9 @@ Vagrant.configure("2") do |config|
 
       # enable (uncomment) this for debugging output
       #vbox.gui = true
+
+      # fix Virtualbox timeout bug (older version)
+      vbox.customize ["modifyvm", :id, "--cableconnected1", "on"]
 
       # host-only network on which web browser serves files
       config.vm.network "private_network", ip: "192.168.56.101"
@@ -28,14 +34,16 @@ Vagrant.configure("2") do |config|
     config.vm.provider "aws" do |aws, override|
 
       aws.tags["Name"] = "Eesen Transcriber"
-      aws.ami = "ami-663a6e0c" # Ubuntu ("Trusty") Server 14.04 LTS AMI - US-East region
+#      aws.ami = "ami-45b69e52" # Ubuntu ("Xenial") Server 16.04 LTS AMI - US-East region hvm:ebs-ssd
+#      aws.ami = "ami-fdb69eea" # Ubuntu ("Xenial") Server 16.04 LTS AMI - US-East region ebs-ssd
+      aws.ami = "ami-abbc94bc"  # release 20161115 hvm-instance
       aws.instance_type = "m3.xlarge"
 
       override.vm.synced_folder ".", "/vagrant", type: "sshfs", ssh_username: ENV['USER'], ssh_port: "22", prompt_for_password: "true"
 
-      override.vm.box = "http://speechkitchen.org/dummy.box"
+      override.vm.box_url = "http://speechkitchen.org/dummy.box"
 
-      # it is assumed these environment variables were set by ". aws.sh"
+      # it is assumed these environment variables were set by ". env.sh"
       aws.access_key_id = ENV['AWS_KEY']
       aws.secret_access_key = ENV['AWS_SECRETKEY']
       aws.keypair_name = ENV['AWS_KEYPAIR']
@@ -47,7 +55,7 @@ Vagrant.configure("2") do |config|
 
       # https://console.aws.amazon.com/ec2/v2/home?region=us-east-1#SecurityGroups
       # Edit the security group on AWS Console; Inbound tab, add the HTTP rule
-      aws.security_groups = "launch-wizard-1"
+    aws.security_groups = ENV['AWS_SECURITYGROUP']
 
       #aws.subnet_id = "vpc-666c9a02"
       aws.region_config "us-east-1" do |region|
@@ -62,8 +70,10 @@ Vagrant.configure("2") do |config|
     end
 
   config.vm.provision "shell", inline: <<-SHELL
-    sudo apt-get update -y
-    sudo apt-get upgrade
+    apt-get update
+
+    apt-mark hold grub-legacy-ec2
+    apt-get upgrade -y
 
     if grep --quiet vagrant /etc/passwd
     then
@@ -72,9 +82,15 @@ Vagrant.configure("2") do |config|
       user="ubuntu"
     fi
 
-    sudo apt-get install -y git make automake libtool autoconf patch subversion fuse\
-       libatlas-base-dev libatlas-dev liblapack-dev sox openjdk-6-jre libav-tools g++\
-       zlib1g-dev libsox-fmt-all apache2 sshfs
+    apt-get install -y git make automake libtool-bin autoconf patch subversion fuse\
+       libatlas-base-dev libatlas-dev liblapack-dev sox openjdk-8-jre libav-tools g++\
+       zlib1g-dev libsox-fmt-all apache2 sshfs python2.7
+
+    update-alternatives --install /usr/bin/python python /usr/bin/python2.7 1
+
+    # fix dash-as-bash
+    rm /bin/sh
+    ln -s /bin/bash /bin/sh
 
     # If you wish to train EESEN with a GPU machine, uncomment this section to install CUDA
     # also uncomment the line that mentions cudatk-dir in the EESEN install section below
@@ -90,6 +106,7 @@ Vagrant.configure("2") do |config|
     git clone https://github.com/srvk/eesen
     cd eesen
     git reset --hard 698ee6f
+
     cd tools
     make -j `lscpu -p|grep -v "#"|wc -l`
     # remove a parameter from scoring script
@@ -143,7 +160,7 @@ Vagrant.configure("2") do |config|
     ln -s /vagrant/src-audio /home/${user}/tools/eesen-offline-transcriber/src-audio
 
     # get XFCE, xterm if we want guest VM to open windows /menus on host
-    #sudo apt-get install -y xfce4-panel xterm
+    #apt-get install -y xfce4-panel xterm
 
     # Apache: set up web content
     cd /vagrant
@@ -158,15 +175,18 @@ Vagrant.configure("2") do |config|
     # by symlinking ~/bin to here
     ln -s /home/${user}/tools/eesen-offline-transcriber /home/${user}/bin
 
+    chmod g-w /var/log
+
     # get SLURM stuff
     apt-get install -y --no-install-recommends slurm-llnl < /usr/bin/yes
     /usr/sbin/create-munge-key -f
     mkdir -p /var/run/munge /var/run/slurm-llnl
     chown munge:root /var/run/munge
     chown slurm:slurm /var/run/slurm-llnl
-    echo 'OPTIONS="--syslog"' >> /etc/default/munge
+    echo 'OPTIONS="--force --syslog"' >> /etc/default/munge
     cp /vagrant/conf/slurm.conf /etc/slurm-llnl/slurm.conf
     cp /vagrant/conf/reconf-slurm.sh /root/
+
     # 
     # Supervisor stuff needed by slurm
     # copy config first so it gets picked up
@@ -220,6 +240,9 @@ end
     fi
 
     rm -rf /var/run/motd.dynamic
+
+    service slurmctld start
+    service slurmd start
 
     su ${user} -c "cd /home/${user}/tools/eesen-offline-transcriber && ./watch.sh >& /vagrant/log/watched.log &"
 SHELL
